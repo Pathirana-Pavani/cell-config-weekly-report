@@ -1,0 +1,23 @@
+# Real network/customer data -- never commit these.
+input_zip/*
+!input_zip/.gitkeep
+other_exports/*
+!other_exports/.gitkeep
+output/*
+!output/.gitkeep
+_extracted/
+
+# Python / local env
+.venv/
+__pycache__/
+*.pyc
+
+# Excel lock files
+~$*.xlsx
+~$*.xlsm
+
+# OS junk
+.DS_Store
+
+# Streamlit local state
+.streamlit/secrets.toml
