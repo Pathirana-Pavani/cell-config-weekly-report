@@ -13,26 +13,38 @@ Flow for a team member:
        just left blank).
     4. Click "Generate report", download it immediately.
 
-Every generated report also gets uploaded to Cloudflare R2 (S3-compatible
-object storage) under a key based on today's date -- ONE file per day,
-overwritten if the report is regenerated the same day. The "Previous
-Reports" tab lists everything in the bucket with a direct download link.
-This is real persistent storage: unlike this app's own local disk, it
-survives redeploys, sleep, and isn't tied to any one person's account.
+Every generated report also gets uploaded to Firebase Storage under a key
+based on today's date -- ONE file per day, overwritten if the report is
+regenerated the same day. The "Previous Reports" tab lists everything in
+the bucket with a direct download link. This is real persistent storage:
+unlike this app's own local disk, it survives redeploys, sleep, and isn't
+tied to any one person's account.
 
 REQUIRED SETUP (one-time, done by whoever administers this app)
-    In the Streamlit Cloud app's Settings -> Secrets, add:
+    1. Create a Firebase project at firebase.google.com (no card needed),
+       enable Storage there, and note the storage bucket name shown
+       (e.g. "your-project.appspot.com").
+    2. Project Settings -> Service Accounts -> Generate new private key.
+       This downloads a JSON file -- paste its ENTIRE contents as-is.
+    3. In the Streamlit Cloud app's Settings -> Secrets, add (note the
+       credentials_json value uses ''' single-quoted triple quotes, NOT
+       triple double quotes -- this matters, see below):
 
-        [r2]
-        account_id = "..."
-        access_key_id = "..."
-        secret_access_key = "..."
-        bucket = "cell-config-reports"
+        [firebase]
+        storage_bucket = "your-project.appspot.com"
+        credentials_json = '''
+        { ...paste the full downloaded JSON file content here... }
+        '''
 
-    (Create the bucket + API token in the Cloudflare dashboard under
-    R2 Object Storage first.) Without this configured, report generation
-    and direct download still work -- only the "Previous Reports" history
-    is unavailable.
+       Why single-quoted ''': TOML's double-quoted multi-line string
+       processes backslash escapes itself, which would corrupt the
+       newline escape sequences inside the JSON's private_key field
+       before Python ever parses the JSON. TOML's ''' (literal
+       multi-line) string leaves backslashes untouched, so the JSON
+       parses correctly.
+
+    Without this configured, report generation and direct download still
+    work -- only the "Previous Reports" history is unavailable.
 
 The report template (template/basic_configurations.xlsx) is bundled with
 this app -- nobody uploads it, it's the same one every week.
@@ -63,49 +75,45 @@ REPORTS_PREFIX = "reports/"
 
 
 # ---------------------------------------------------------------------------
-# R2 (Cloudflare) storage -- one object per day, overwritten same-day.
+# Firebase Storage -- one object per day, overwritten same-day.
 # ---------------------------------------------------------------------------
 
-def get_r2_client():
-    """Return a boto3 S3 client configured for Cloudflare R2, or None if
-    the [r2] secrets block isn't configured yet."""
-    if "r2" not in st.secrets:
+def get_firebase_bucket():
+    """Return a Firebase Storage bucket handle, or None if the [firebase]
+    secrets block isn't configured yet."""
+    if "firebase" not in st.secrets:
         return None
-    import boto3
-    cfg = st.secrets["r2"]
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{cfg['account_id']}.r2.cloudflarestorage.com",
-        aws_access_key_id=cfg["access_key_id"],
-        aws_secret_access_key=cfg["secret_access_key"],
-        region_name="auto",
-    )
+    import json
+    import firebase_admin
+    from firebase_admin import credentials, storage as fb_storage
 
-
-def r2_bucket_name():
-    return st.secrets["r2"]["bucket"] if "r2" in st.secrets else None
+    if not firebase_admin._apps:
+        cfg = st.secrets["firebase"]
+        cred_dict = json.loads(cfg["credentials_json"])
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred, {"storageBucket": cfg["storage_bucket"]})
+    return fb_storage.bucket()
 
 
 def upload_daily_report(output_bytes, source_filename):
     """
-    Upload today's report to R2 under a key that's ONLY the date -- so
+    Upload today's report under a key that's ONLY the date -- so
     regenerating later the same day always overwrites the same object,
     regardless of what the source zip was named. The original output
-    filename is kept as object metadata so the history tab can still show
+    filename is kept as blob metadata so the history tab can still show
     something meaningful.
     """
-    client = get_r2_client()
-    if client is None:
-        return None, "R2 storage isn't configured -- report was not saved to persistent storage."
+    bucket = get_firebase_bucket()
+    if bucket is None:
+        return None, "Firebase storage isn't configured -- report was not saved to persistent storage."
     today = datetime.now().strftime("%Y-%m-%d")
     key = f"{REPORTS_PREFIX}{today}.xlsx"
     try:
-        client.put_object(
-            Bucket=r2_bucket_name(),
-            Key=key,
-            Body=output_bytes,
-            ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            Metadata={"original-name": source_filename},
+        blob = bucket.blob(key)
+        blob.metadata = {"original-name": source_filename}
+        blob.upload_from_string(
+            output_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         return key, None
     except Exception as e:
@@ -113,35 +121,28 @@ def upload_daily_report(output_bytes, source_filename):
 
 
 def list_daily_reports():
-    """Newest-first list of dicts (day, key, size_bytes, original_name) from R2. None if not configured."""
-    client = get_r2_client()
-    if client is None:
+    """Newest-first list of dicts (day, key, size, original_name). None if not configured."""
+    bucket = get_firebase_bucket()
+    if bucket is None:
         return None
-    bucket = r2_bucket_name()
-    resp = client.list_objects_v2(Bucket=bucket, Prefix=REPORTS_PREFIX)
-    contents = resp.get("Contents", [])
-    contents.sort(key=lambda o: o["Key"], reverse=True)
+    blobs = list(bucket.list_blobs(prefix=REPORTS_PREFIX))
+    blobs.sort(key=lambda b: b.name, reverse=True)
 
     items = []
-    for obj in contents:
-        key = obj["Key"]
-        day = key[len(REPORTS_PREFIX):].removesuffix(".xlsx")
-        try:
-            head = client.head_object(Bucket=bucket, Key=key)
-            original_name = head.get("Metadata", {}).get("original-name", key)
-        except Exception:
-            original_name = key
-        items.append({"day": day, "key": key, "size": obj["Size"], "original_name": original_name})
+    for blob in blobs:
+        day = blob.name[len(REPORTS_PREFIX):]
+        if day.endswith(".xlsx"):
+            day = day[:-len(".xlsx")]
+        original_name = (blob.metadata or {}).get("original-name", blob.name)
+        items.append({"day": day, "key": blob.name, "size": blob.size, "original_name": original_name})
     return items
 
 
 def presigned_download_url(key, expires_in=3600):
-    client = get_r2_client()
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": r2_bucket_name(), "Key": key},
-        ExpiresIn=expires_in,
-    )
+    from datetime import timedelta
+    bucket = get_firebase_bucket()
+    blob = bucket.blob(key)
+    return blob.generate_signed_url(version="v4", expiration=timedelta(seconds=expires_in), method="GET")
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +151,7 @@ def presigned_download_url(key, expires_in=3600):
 
 st.title("Weekly Cell Config Report")
 
-tab_generate, tab_history = st.tabs(["\U0001F4E4 Generate Report", "\U0001F5C2️ Previous Reports"])
+tab_generate, tab_history = st.tabs(["Generate Report", "Previous Reports"])
 
 with tab_generate:
     st.caption(

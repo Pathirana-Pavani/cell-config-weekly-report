@@ -43,6 +43,28 @@ Deploy for free (one-time setup):
 The app sleeps after inactivity and wakes up (a few seconds delay) on the
 next visit -- normal for the free tier and fine for weekly use.
 
+### Persistent report history (optional but recommended)
+
+The "Previous Reports" tab needs Firebase Storage configured, or it just
+shows a setup message (report generation/download still work without it).
+One-time setup:
+
+1. Create a project at [firebase.google.com](https://firebase.google.com)
+   (no card needed) and enable Storage.
+2. Project Settings -> Service Accounts -> Generate new private key
+   (downloads a JSON file).
+3. In the Streamlit Cloud app's Settings -> Secrets, add (note the
+   `'''` single-quotes around the JSON -- see `webapp.py`'s top comment
+   for why that matters):
+
+   ```toml
+   [firebase]
+   storage_bucket = "your-project.appspot.com"
+   credentials_json = '''
+   { ...paste the full downloaded JSON file content here... }
+   '''
+   ```
+
 ## What's NOT in this repo
 
 `input_zip/`, `other_exports/`, and `output/` are gitignored -- they hold
