@@ -13,35 +13,27 @@ Flow for a team member:
        just left blank).
     4. Click "Generate report", download it immediately.
 
-Every generated report also gets uploaded to Firebase Storage under a key
-based on today's date -- ONE file per day, overwritten if the report is
-regenerated the same day. The "Previous Reports" tab lists everything in
-the bucket with a direct download link. This is real persistent storage:
-unlike this app's own local disk, it survives redeploys, sleep, and isn't
-tied to any one person's account.
+Every generated report also gets committed to this same GitHub repo, under
+reports/<date>.xlsx -- ONE file per day, overwritten (same commit path) if
+the report is regenerated the same day. The "Previous Reports" tab lists
+everything under reports/ with a download button. This survives app
+restarts/redeploys (it's stored in git, not the app's own disk).
+
+NOTE: this means each day's generated report -- containing real network
+data (NE IDs, site names, traffic, power values) -- becomes part of this
+repo's git history going forward. Keep the repo private. This was a
+deliberate tradeoff after other free storage options (Cloudflare R2,
+Supabase, Firebase Storage) all required a billing card just to use their
+storage product.
 
 REQUIRED SETUP (one-time, done by whoever administers this app)
-    1. Create a Firebase project at firebase.google.com (no card needed),
-       enable Storage there, and note the storage bucket name shown
-       (e.g. "your-project.appspot.com").
-    2. Project Settings -> Service Accounts -> Generate new private key.
-       This downloads a JSON file -- paste its ENTIRE contents as-is.
-    3. In the Streamlit Cloud app's Settings -> Secrets, add (note the
-       credentials_json value uses ''' single-quoted triple quotes, NOT
-       triple double quotes -- this matters, see below):
+    1. Create a GitHub Personal Access Token (fine-grained, scoped to just
+       this repo, "Contents: Read and write" permission) for whichever
+       account owns this repo.
+    2. In the Streamlit Cloud app's Settings -> Secrets, add:
 
-        [firebase]
-        storage_bucket = "your-project.appspot.com"
-        credentials_json = '''
-        { ...paste the full downloaded JSON file content here... }
-        '''
-
-       Why single-quoted ''': TOML's double-quoted multi-line string
-       processes backslash escapes itself, which would corrupt the
-       newline escape sequences inside the JSON's private_key field
-       before Python ever parses the JSON. TOML's ''' (literal
-       multi-line) string leaves backslashes untouched, so the JSON
-       parses correctly.
+        [github]
+        token = "github_pat_..."
 
     Without this configured, report generation and direct download still
     work -- only the "Previous Reports" history is unavailable.
@@ -59,90 +51,107 @@ DEPLOY (free)
     https://<name>.streamlit.app link.
 """
 
+import base64
 import contextlib
 import io
 import os
 import tempfile
 from datetime import datetime
 
+import requests
 import streamlit as st
 
 import excel_automation as ea
 
 st.set_page_config(page_title="Weekly Cell Config Report", page_icon="\U0001F4F6", layout="centered")
 
-REPORTS_PREFIX = "reports/"
+GITHUB_REPO = "Pathirana-Pavani/cell-config-weekly-report"
+GITHUB_BRANCH = "main"
+GITHUB_REPORTS_DIR = "reports"
+GITHUB_API = "https://api.github.com"
 
 
 # ---------------------------------------------------------------------------
-# Firebase Storage -- one object per day, overwritten same-day.
+# GitHub-as-storage -- one committed file per day, overwritten same-day.
 # ---------------------------------------------------------------------------
 
-def get_firebase_bucket():
-    """Return a Firebase Storage bucket handle, or None if the [firebase]
-    secrets block isn't configured yet."""
-    if "firebase" not in st.secrets:
-        return None
-    import json
-    import firebase_admin
-    from firebase_admin import credentials, storage as fb_storage
+def github_token():
+    return st.secrets.get("github", {}).get("token")
 
-    if not firebase_admin._apps:
-        cfg = st.secrets["firebase"]
-        cred_dict = json.loads(cfg["credentials_json"])
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred, {"storageBucket": cfg["storage_bucket"]})
-    return fb_storage.bucket()
+
+def github_headers():
+    return {
+        "Authorization": f"Bearer {github_token()}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
 
 def upload_daily_report(output_bytes, source_filename):
     """
-    Upload today's report under a key that's ONLY the date -- so
-    regenerating later the same day always overwrites the same object,
-    regardless of what the source zip was named. The original output
-    filename is kept as blob metadata so the history tab can still show
-    something meaningful.
+    Commit today's report to reports/<date>.xlsx in this repo. If that
+    path already has a commit from earlier today, this overwrites it
+    (same path, new commit) -- one file per day, regardless of what the
+    source zip was named.
     """
-    bucket = get_firebase_bucket()
-    if bucket is None:
-        return None, "Firebase storage isn't configured -- report was not saved to persistent storage."
+    token = github_token()
+    if not token:
+        return None, "GitHub storage isn't configured -- report was not saved to persistent storage."
+
     today = datetime.now().strftime("%Y-%m-%d")
-    key = f"{REPORTS_PREFIX}{today}.xlsx"
-    try:
-        blob = bucket.blob(key)
-        blob.metadata = {"original-name": source_filename}
-        blob.upload_from_string(
-            output_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        return key, None
-    except Exception as e:
-        return None, f"Could not save to persistent storage: {e}"
+    path = f"{GITHUB_REPORTS_DIR}/{today}.xlsx"
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+
+    # Look up the current file's sha (required by the API to overwrite an
+    # existing file); absent if this is the first report of the day.
+    existing_sha = None
+    r = requests.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
+    if r.status_code == 200:
+        existing_sha = r.json()["sha"]
+    elif r.status_code != 404:
+        return None, f"Could not check existing report: {r.status_code} {r.text[:200]}"
+
+    body = {
+        "message": f"Daily report {today} ({source_filename})",
+        "content": base64.b64encode(output_bytes).decode("ascii"),
+        "branch": GITHUB_BRANCH,
+    }
+    if existing_sha:
+        body["sha"] = existing_sha
+
+    r = requests.put(url, headers=github_headers(), json=body)
+    if r.status_code in (200, 201):
+        return path, None
+    return None, f"Could not save to persistent storage: {r.status_code} {r.text[:200]}"
 
 
 def list_daily_reports():
-    """Newest-first list of dicts (day, key, size, original_name). None if not configured."""
-    bucket = get_firebase_bucket()
-    if bucket is None:
+    """Newest-first list of dicts (day, sha, size, name). None if not configured, [] if empty."""
+    if not github_token():
         return None
-    blobs = list(bucket.list_blobs(prefix=REPORTS_PREFIX))
-    blobs.sort(key=lambda b: b.name, reverse=True)
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_REPORTS_DIR}"
+    r = requests.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
+    if r.status_code == 404:
+        return []
+    r.raise_for_status()
 
     items = []
-    for blob in blobs:
-        day = blob.name[len(REPORTS_PREFIX):]
-        if day.endswith(".xlsx"):
-            day = day[:-len(".xlsx")]
-        original_name = (blob.metadata or {}).get("original-name", blob.name)
-        items.append({"day": day, "key": blob.name, "size": blob.size, "original_name": original_name})
+    for entry in r.json():
+        if not entry["name"].endswith(".xlsx"):
+            continue
+        day = entry["name"][:-len(".xlsx")]
+        items.append({"day": day, "sha": entry["sha"], "size": entry["size"], "name": entry["name"]})
+    items.sort(key=lambda x: x["day"], reverse=True)
     return items
 
 
-def presigned_download_url(key, expires_in=3600):
-    from datetime import timedelta
-    bucket = get_firebase_bucket()
-    blob = bucket.blob(key)
-    return blob.generate_signed_url(version="v4", expiration=timedelta(seconds=expires_in), method="GET")
+def fetch_report_bytes(sha):
+    """Fetch a file's raw bytes by blob sha (works past the Contents API's
+    1MB inline-content limit, unlike GET-ing the file path directly)."""
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/git/blobs/{sha}"
+    r = requests.get(url, headers=github_headers())
+    r.raise_for_status()
+    return base64.b64decode(r.json()["content"])
 
 
 # ---------------------------------------------------------------------------
@@ -287,13 +296,13 @@ with tab_generate:
 with tab_history:
     st.caption(
         "One report per day -- regenerating later the same day replaces that day's file. "
-        "Stored in Cloudflare R2, so this survives app restarts/redeploys."
+        "Stored as commits in this app's GitHub repo, so this survives app restarts/redeploys."
     )
 
     items = list_daily_reports()
     if items is None:
         st.info(
-            "Persistent storage isn't configured yet. Add the `[r2]` secrets block "
+            "Persistent storage isn't configured yet. Add the `[github]` secrets block "
             "in this app's Settings -> Secrets to enable this tab."
         )
     elif not items:
@@ -302,5 +311,11 @@ with tab_history:
         for item in items:
             col_day, col_name, col_dl = st.columns([1.3, 3, 1.3])
             col_day.write(item["day"])
-            col_name.write(item["original_name"])
-            col_dl.link_button("Download", presigned_download_url(item["key"]))
+            col_name.write(item["name"])
+            col_dl.download_button(
+                "Download",
+                data=fetch_report_bytes(item["sha"]),
+                file_name=item["name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_{item['day']}",
+            )

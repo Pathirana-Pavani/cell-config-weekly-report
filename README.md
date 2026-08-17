@@ -32,8 +32,9 @@ streamlit run webapp.py
 
 Deploy for free (one-time setup):
 
-1. Push this repo to GitHub (keep it **private** -- it's fine since it
-   contains no real data, but no reason to make it public).
+1. Push this repo to GitHub and keep it **private** -- required, since
+   (per below) generated reports containing real network data get
+   committed into it.
 2. Go to [share.streamlit.io](https://share.streamlit.io), sign in with
    GitHub.
 3. Click "New app", pick this repo/branch, set the main file to `webapp.py`,
@@ -45,28 +46,29 @@ next visit -- normal for the free tier and fine for weekly use.
 
 ### Persistent report history (optional but recommended)
 
-The "Previous Reports" tab needs Firebase Storage configured, or it just
-shows a setup message (report generation/download still work without it).
+The "Previous Reports" tab commits each day's report straight into this
+repo (`reports/<date>.xlsx`, overwritten if regenerated the same day), or
+just shows a setup message if unconfigured (report generation/download
+still work either way). This was chosen after Cloudflare R2, Supabase, and
+Firebase Storage all turned out to require a billing card just to enable
+their storage product -- committing to this repo needs no new account and
+no card, at the cost of real network data living in git history (hence
+the repo must stay private).
+
 One-time setup:
 
-1. Create a project at [firebase.google.com](https://firebase.google.com)
-   (no card needed) and enable Storage.
-2. Project Settings -> Service Accounts -> Generate new private key
-   (downloads a JSON file).
-3. In the Streamlit Cloud app's Settings -> Secrets, add (note the
-   `'''` single-quotes around the JSON -- see `webapp.py`'s top comment
-   for why that matters):
+1. Create a GitHub Personal Access Token (fine-grained, scoped to just
+   this repo, "Contents: Read and write" permission).
+2. In the Streamlit Cloud app's Settings -> Secrets, add:
 
    ```toml
-   [firebase]
-   storage_bucket = "your-project.appspot.com"
-   credentials_json = '''
-   { ...paste the full downloaded JSON file content here... }
-   '''
+   [github]
+   token = "github_pat_..."
    ```
 
 ## What's NOT in this repo
 
-`input_zip/`, `other_exports/`, and `output/` are gitignored -- they hold
-real network configuration data and must never be committed. Only the
-folder structure (`.gitkeep`) and the code are tracked.
+`input_zip/` and `other_exports/` are gitignored -- they hold the *input*
+network configuration data and must never be committed. `output/` (the
+CLI's local output folder) is also gitignored. The `reports/` folder,
+however, IS committed -- see "Persistent report history" above.
