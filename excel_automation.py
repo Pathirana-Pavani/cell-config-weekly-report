@@ -595,13 +595,16 @@ def run_pipeline(zip_path, template_path, other_exports_dir, output_dir,
 
     max_needed_col = max((col for col in name_to_index.values()), default=-1) + 1
 
+    PROGRESS_EVERY = 2000  # this loop is the slowest single step (often 1-8+ minutes
+                            # for large exports) and otherwise prints nothing until it
+                            # finishes, which looks like the app has frozen.
     rows_data = []
-    for row_tuple in src_ws.iter_rows(
+    for i, row_tuple in enumerate(src_ws.iter_rows(
         min_row=SOURCE_DATA_START_ROW,
         max_row=SOURCE_DATA_START_ROW + 500_000,
         max_col=max_needed_col,
         values_only=True,
-    ):
+    )):
         if all(v is None for v in row_tuple):  # end of data
             break
         row_values = {}
@@ -617,6 +620,8 @@ def run_pipeline(zip_path, template_path, other_exports_dir, output_dir,
                 any_value = True
         if any_value:
             rows_data.append(row_values)
+        if (i + 1) % PROGRESS_EVERY == 0:
+            log(f"  ...{i + 1} rows scanned so far ({time.time() - t0:.1f}s elapsed)")
 
     log(f"Read {len(rows_data)} data rows from source in {time.time() - t0:.1f}s.")
     summary["rows_read"] = len(rows_data)

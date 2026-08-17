@@ -56,6 +56,7 @@ import contextlib
 import io
 import os
 import tempfile
+import time
 from datetime import datetime
 
 import requests
@@ -155,6 +156,35 @@ def fetch_report_bytes(sha):
 
 
 # ---------------------------------------------------------------------------
+# Live progress -- run_pipeline()'s row-reading step is the slow part
+# (often 1-8+ minutes for large exports) and otherwise prints nothing
+# until it's completely done, which looks like the app has frozen. This
+# streams each log line to a placeholder as it happens, with an elapsed
+# timer, while also buffering everything for the "Full processing log".
+# ---------------------------------------------------------------------------
+
+class LiveLogStream:
+    def __init__(self, buffer, placeholder, start_time):
+        self.buffer = buffer
+        self.placeholder = placeholder
+        self.start_time = start_time
+        self._pending = ""
+
+    def write(self, text):
+        self.buffer.write(text)
+        self._pending += text
+        if "\n" in self._pending:
+            *complete_lines, self._pending = self._pending.split("\n")
+            last_line = next((line for line in reversed(complete_lines) if line.strip()), None)
+            if last_line:
+                elapsed = time.time() - self.start_time
+                self.placeholder.text(f"[{elapsed:5.1f}s] {last_line.strip()}")
+
+    def flush(self):
+        pass
+
+
+# ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
@@ -164,7 +194,7 @@ tab_generate, tab_history = st.tabs(["Generate Report", "Previous Reports"])
 
 with tab_generate:
     st.caption(
-        "Upload this week's network export (and, optionally, the Cell DB export "
+        "Upload network export zip file and (optionally, the Cell DB export "
         "and power license export) to generate the filled report."
     )
 
@@ -225,20 +255,29 @@ with tab_generate:
             output_dir = os.path.join(work_dir, "output")
 
             log_buffer = io.StringIO()
+            start_time = time.time()
             try:
-                with st.spinner("Processing... this can take a few minutes for large exports."):
-                    with contextlib.redirect_stdout(log_buffer):
+                with st.status("Generating report...", expanded=True) as status_box:
+                    status_line = st.empty()
+                    live_stream = LiveLogStream(log_buffer, status_line, start_time)
+                    with contextlib.redirect_stdout(live_stream):
                         output_path, summary = ea.run_pipeline(
                             zip_path, template_path, other_exports_dir, output_dir,
                             cell_db_export_path=cell_db_path,
                             power_license_path=power_license_path,
                         )
+                    status_box.update(
+                        label=f"Report generated in {time.time() - start_time:.1f}s",
+                        state="complete",
+                    )
             except ea.AutomationError as e:
+                status_box.update(label="Failed", state="error")
                 st.error(f"Could not generate the report: {e}")
                 with st.expander("Full processing log"):
                     st.text(log_buffer.getvalue())
                 st.stop()
             except Exception as e:  # unexpected -- still show the log to help debugging
+                status_box.update(label="Failed", state="error")
                 st.error(f"Unexpected error: {e}")
                 with st.expander("Full processing log"):
                     st.text(log_buffer.getvalue())
@@ -296,7 +335,6 @@ with tab_generate:
 with tab_history:
     st.caption(
         "One report per day -- regenerating later the same day replaces that day's file. "
-        "Stored as commits in this app's GitHub repo, so this survives app restarts/redeploys."
     )
 
     items = list_daily_reports()
