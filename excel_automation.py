@@ -88,21 +88,39 @@ TEMPLATE_HEADER_ROWS = (1, 2)
 # keeps working even if the template's column order changes.
 FORMULA_COLUMNS = [
     {
+        # Plain "&" instead of CONCAT (which openpyxl must write with an
+        # "_xlfn." prefix): CONCAT needs Excel 2016+, and older/other
+        # spreadsheet tools can show #NAME? for it. "&" is universal.
         "header": "NEID_CellID",
         "refs": ["NE ID", "E-UTRAN FDD Cell ID"],
-        "formula": lambda r, c: f"=_xlfn.CONCAT({c['NE ID']}{r},{c['E-UTRAN FDD Cell ID']}{r})",
+        "formula": lambda r, c: f"={c['NE ID']}{r}&{c['E-UTRAN FDD Cell ID']}{r}",
     },
     {
+        # IFERROR fallback: a handful of User Labels (e.g. "POHIN7G",
+        # "LANPO1-M-L21-B2", "TRALL1G_HS") don't contain "_L" at all, which
+        # would otherwise make FIND(...) throw #VALUE!. Those rows fall
+        # back to the raw User Label.
         "header": "Site Name",
         "refs": ["User Label"],
-        "formula": lambda r, c: f'=LEFT({c["User Label"]}{r},FIND("_L",{c["User Label"]}{r})-1)',
+        "formula": lambda r, c: (
+            f'=IFERROR(LEFT({c["User Label"]}{r},FIND("_L",{c["User Label"]}{r})-1),'
+            f'{c["User Label"]}{r})'
+        ),
     },
     {
+        # Same result as TEXTBEFORE(F,"L")&""&TEXTBEFORE(TEXTAFTER(F,"_L"),"-")
+        # but written with classic LEFT/FIND/MID instead. TEXTBEFORE/TEXTAFTER
+        # need Excel 365/2021+ and openpyxl must write them with an "_xlfn."
+        # prefix -- older Excel shows #NAME? for them. LEFT/FIND/MID give an
+        # identical result and work in every Excel version. Wrapped in
+        # IFERROR for the same non-"_L" labels as above.
         "header": "Absolute sector",
         "refs": ["User Label"],
         "formula": lambda r, c: (
-            f'=_xlfn.TEXTBEFORE({c["User Label"]}{r},"L")&""&'
-            f'_xlfn.TEXTBEFORE(_xlfn.TEXTAFTER({c["User Label"]}{r},"_L"),"-")'
+            f'=IFERROR(LEFT({c["User Label"]}{r},FIND("L",{c["User Label"]}{r})-1)&'
+            f'MID({c["User Label"]}{r},FIND("_L",{c["User Label"]}{r})+2,'
+            f'FIND("-",{c["User Label"]}{r},FIND("_L",{c["User Label"]}{r})+2)'
+            f'-(FIND("_L",{c["User Label"]}{r})+2)),{c["User Label"]}{r})'
         ),
     },
     {
@@ -851,6 +869,11 @@ def run_pipeline(zip_path, template_path, other_exports_dir, output_dir,
         for fc in active_formula_columns:
             target_col = combined_col_map[fc["header"]]
             out_ws.cell(row=out_row, column=target_col, value=fc["formula"](out_row, col_letters))
+
+    # Defensive: openpyxl writes formula TEXT only, never a cached result.
+    # Explicitly force a full recalc on open so formula columns never show
+    # stale/blank values regardless of openpyxl version behavior.
+    out_wb.calculation.fullCalcOnLoad = True
 
     out_wb.save(output_path)
     log(f"\nDone. Output saved to: {output_path}")
