@@ -11,15 +11,28 @@ Flow for a team member:
     3. Upload the Cell DB Export and/or power license export (optional --
        skip either one if you don't have it this week; those columns are
        just left blank).
-    4. Click "Generate report".
-    5. Download the filled workbook, read the summary.
+    4. Click "Generate report", download it immediately.
 
-Every generated report is also saved into this app's own output/ folder
-(REPORTS_DIR below), and listed under "Previously generated reports" so
-anyone can come back later and grab a report someone else already ran --
-they don't have to regenerate it themselves. This only survives as long as
-this app instance stays running -- a redeploy or a long sleep (free tier)
-clears it, same as any other local file in the container.
+Every generated report also gets uploaded to Cloudflare R2 (S3-compatible
+object storage) under a key based on today's date -- ONE file per day,
+overwritten if the report is regenerated the same day. The "Previous
+Reports" tab lists everything in the bucket with a direct download link.
+This is real persistent storage: unlike this app's own local disk, it
+survives redeploys, sleep, and isn't tied to any one person's account.
+
+REQUIRED SETUP (one-time, done by whoever administers this app)
+    In the Streamlit Cloud app's Settings -> Secrets, add:
+
+        [r2]
+        account_id = "..."
+        access_key_id = "..."
+        secret_access_key = "..."
+        bucket = "cell-config-reports"
+
+    (Create the bucket + API token in the Cloudflare dashboard under
+    R2 Object Storage first.) Without this configured, report generation
+    and direct download still work -- only the "Previous Reports" history
+    is unavailable.
 
 The report template (template/basic_configurations.xlsx) is bundled with
 this app -- nobody uploads it, it's the same one every week.
@@ -46,169 +59,247 @@ import excel_automation as ea
 
 st.set_page_config(page_title="Weekly Cell Config Report", page_icon="\U0001F4F6", layout="centered")
 
-REPORTS_DIR = ea.OUTPUT_DIR
+REPORTS_PREFIX = "reports/"
 
 
-def list_generated_reports():
-    """Newest-first list of (filename, full_path, size_bytes, mtime) for past reports."""
-    if not os.path.isdir(REPORTS_DIR):
-        return []
-    reports = []
-    for fname in os.listdir(REPORTS_DIR):
-        if fname.startswith("~$") or not fname.lower().endswith((".xlsx", ".xlsm")):
-            continue
-        fpath = os.path.join(REPORTS_DIR, fname)
-        stat = os.stat(fpath)
-        reports.append((fname, fpath, stat.st_size, stat.st_mtime))
-    reports.sort(key=lambda r: r[3], reverse=True)
-    return reports
+# ---------------------------------------------------------------------------
+# R2 (Cloudflare) storage -- one object per day, overwritten same-day.
+# ---------------------------------------------------------------------------
 
+def get_r2_client():
+    """Return a boto3 S3 client configured for Cloudflare R2, or None if
+    the [r2] secrets block isn't configured yet."""
+    if "r2" not in st.secrets:
+        return None
+    import boto3
+    cfg = st.secrets["r2"]
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{cfg['account_id']}.r2.cloudflarestorage.com",
+        aws_access_key_id=cfg["access_key_id"],
+        aws_secret_access_key=cfg["secret_access_key"],
+        region_name="auto",
+    )
+
+
+def r2_bucket_name():
+    return st.secrets["r2"]["bucket"] if "r2" in st.secrets else None
+
+
+def upload_daily_report(output_bytes, source_filename):
+    """
+    Upload today's report to R2 under a key that's ONLY the date -- so
+    regenerating later the same day always overwrites the same object,
+    regardless of what the source zip was named. The original output
+    filename is kept as object metadata so the history tab can still show
+    something meaningful.
+    """
+    client = get_r2_client()
+    if client is None:
+        return None, "R2 storage isn't configured -- report was not saved to persistent storage."
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"{REPORTS_PREFIX}{today}.xlsx"
+    try:
+        client.put_object(
+            Bucket=r2_bucket_name(),
+            Key=key,
+            Body=output_bytes,
+            ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Metadata={"original-name": source_filename},
+        )
+        return key, None
+    except Exception as e:
+        return None, f"Could not save to persistent storage: {e}"
+
+
+def list_daily_reports():
+    """Newest-first list of dicts (day, key, size_bytes, original_name) from R2. None if not configured."""
+    client = get_r2_client()
+    if client is None:
+        return None
+    bucket = r2_bucket_name()
+    resp = client.list_objects_v2(Bucket=bucket, Prefix=REPORTS_PREFIX)
+    contents = resp.get("Contents", [])
+    contents.sort(key=lambda o: o["Key"], reverse=True)
+
+    items = []
+    for obj in contents:
+        key = obj["Key"]
+        day = key[len(REPORTS_PREFIX):].removesuffix(".xlsx")
+        try:
+            head = client.head_object(Bucket=bucket, Key=key)
+            original_name = head.get("Metadata", {}).get("original-name", key)
+        except Exception:
+            original_name = key
+        items.append({"day": day, "key": key, "size": obj["Size"], "original_name": original_name})
+    return items
+
+
+def presigned_download_url(key, expires_in=3600):
+    client = get_r2_client()
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": r2_bucket_name(), "Key": key},
+        ExpiresIn=expires_in,
+    )
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
 
 st.title("Weekly Cell Config Report")
-st.caption(
-    "Upload this week's network export (and, optionally, the Cell DB export "
-    "and power license export) to generate the filled report."
-)
 
-with st.form("report_form"):
-    zip_file = st.file_uploader(
-        "Main network export (.zip)",
-        type=["zip"],
-        help="The weekly zipped radio-config export containing the EUtranCellFDD workbook.",
-    )
-    cell_db_file = st.file_uploader(
-        "Cell DB Export (optional)",
-        type=["xlsx", "xlsm"],
-        help="Fills the 'Traffic @ <date>' column. Skip this if you don't have it -- "
-             "that column is just left as-is.",
-    )
-    power_license_file = st.file_uploader(
-        "Power license export (optional)",
-        type=["xlsx", "xlsm"],
-        help="Fills 'FDD Power (W)Authorization Value' and 'LTE FDD(W) Configuration "
-             "Value'. Skip this if you don't have it -- those columns are left blank.",
-    )
-    submitted = st.form_submit_button("Generate report", type="primary")
+tab_generate, tab_history = st.tabs(["\U0001F4E4 Generate Report", "\U0001F5C2️ Previous Reports"])
 
-if submitted:
-    if zip_file is None:
-        st.error("Please upload the main network export zip file.")
-        st.stop()
+with tab_generate:
+    st.caption(
+        "Upload this week's network export (and, optionally, the Cell DB export "
+        "and power license export) to generate the filled report."
+    )
 
-    template_path = ea.find_template_file(ea.TEMPLATE_DIR)
-    if not template_path:
-        st.error(
-            "No template file found in this app's template/ folder. "
-            "This is a setup problem, not something you can fix here -- "
-            "contact whoever maintains this app."
+    with st.form("report_form"):
+        zip_file = st.file_uploader(
+            "Main network export (.zip)",
+            type=["zip"],
+            help="The weekly zipped radio-config export containing the EUtranCellFDD workbook.",
         )
-        st.stop()
+        cell_db_file = st.file_uploader(
+            "Cell DB Export (optional)",
+            type=["xlsx", "xlsm"],
+            help="Fills the 'Traffic @ <date>' column. Skip this if you don't have it -- "
+                 "that column is just left as-is.",
+        )
+        power_license_file = st.file_uploader(
+            "Power license export (optional)",
+            type=["xlsx", "xlsm"],
+            help="Fills 'FDD Power (W)Authorization Value' and 'LTE FDD(W) Configuration "
+                 "Value'. Skip this if you don't have it -- those columns are left blank.",
+        )
+        submitted = st.form_submit_button("Generate report", type="primary")
 
-    with tempfile.TemporaryDirectory(prefix="report_run_") as work_dir:
-        zip_path = os.path.join(work_dir, zip_file.name)
-        with open(zip_path, "wb") as f:
-            f.write(zip_file.getbuffer())
-
-        other_exports_dir = os.path.join(work_dir, "other_exports")
-        os.makedirs(other_exports_dir, exist_ok=True)
-
-        cell_db_path = None
-        if cell_db_file is not None:
-            cell_db_path = os.path.join(other_exports_dir, cell_db_file.name)
-            with open(cell_db_path, "wb") as f:
-                f.write(cell_db_file.getbuffer())
-
-        power_license_path = None
-        if power_license_file is not None:
-            power_license_path = os.path.join(other_exports_dir, power_license_file.name)
-            with open(power_license_path, "wb") as f:
-                f.write(power_license_file.getbuffer())
-
-        # Save straight into REPORTS_DIR (not a temp dir) so the result
-        # persists and shows up under "Previously generated reports" below.
-        log_buffer = io.StringIO()
-        try:
-            with st.spinner("Processing... this can take a few minutes for large exports."):
-                with contextlib.redirect_stdout(log_buffer):
-                    output_path, summary = ea.run_pipeline(
-                        zip_path, template_path, other_exports_dir, REPORTS_DIR,
-                        cell_db_export_path=cell_db_path,
-                        power_license_path=power_license_path,
-                    )
-        except ea.AutomationError as e:
-            st.error(f"Could not generate the report: {e}")
-            with st.expander("Full processing log"):
-                st.text(log_buffer.getvalue())
-            st.stop()
-        except Exception as e:  # unexpected -- still show the log to help debugging
-            st.error(f"Unexpected error: {e}")
-            with st.expander("Full processing log"):
-                st.text(log_buffer.getvalue())
+    if submitted:
+        if zip_file is None:
+            st.error("Please upload the main network export zip file.")
             st.stop()
 
-        with open(output_path, "rb") as f:
-            output_bytes = f.read()
+        template_path = ea.find_template_file(ea.TEMPLATE_DIR)
+        if not template_path:
+            st.error(
+                "No template file found in this app's template/ folder. "
+                "This is a setup problem, not something you can fix here -- "
+                "contact whoever maintains this app."
+            )
+            st.stop()
 
-    st.success(f"Report generated: {summary['rows_read']} cell rows written.")
+        with tempfile.TemporaryDirectory(prefix="report_run_") as work_dir:
+            zip_path = os.path.join(work_dir, zip_file.name)
+            with open(zip_path, "wb") as f:
+                f.write(zip_file.getbuffer())
 
-    st.download_button(
-        "Download filled report",
-        data=output_bytes,
-        file_name=summary["output_name"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
+            other_exports_dir = os.path.join(work_dir, "other_exports")
+            os.makedirs(other_exports_dir, exist_ok=True)
+
+            cell_db_path = None
+            if cell_db_file is not None:
+                cell_db_path = os.path.join(other_exports_dir, cell_db_file.name)
+                with open(cell_db_path, "wb") as f:
+                    f.write(cell_db_file.getbuffer())
+
+            power_license_path = None
+            if power_license_file is not None:
+                power_license_path = os.path.join(other_exports_dir, power_license_file.name)
+                with open(power_license_path, "wb") as f:
+                    f.write(power_license_file.getbuffer())
+
+            output_dir = os.path.join(work_dir, "output")
+
+            log_buffer = io.StringIO()
+            try:
+                with st.spinner("Processing... this can take a few minutes for large exports."):
+                    with contextlib.redirect_stdout(log_buffer):
+                        output_path, summary = ea.run_pipeline(
+                            zip_path, template_path, other_exports_dir, output_dir,
+                            cell_db_export_path=cell_db_path,
+                            power_license_path=power_license_path,
+                        )
+            except ea.AutomationError as e:
+                st.error(f"Could not generate the report: {e}")
+                with st.expander("Full processing log"):
+                    st.text(log_buffer.getvalue())
+                st.stop()
+            except Exception as e:  # unexpected -- still show the log to help debugging
+                st.error(f"Unexpected error: {e}")
+                with st.expander("Full processing log"):
+                    st.text(log_buffer.getvalue())
+                st.stop()
+
+            with open(output_path, "rb") as f:
+                output_bytes = f.read()
+
+        st.success(f"Report generated: {summary['rows_read']} cell rows written.")
+
+        st.download_button(
+            "Download filled report",
+            data=output_bytes,
+            file_name=summary["output_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+
+        saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"])
+        if save_error:
+            st.warning(save_error)
+        else:
+            st.caption(f"Also saved to persistent storage as today's report ({saved_key.rsplit('/', 1)[-1]}).")
+
+        st.subheader("Summary")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rows written", summary["rows_read"])
+        col2.metric("RS power matched", f"{summary['rs_power']['entries'] - summary['rs_power']['misses']}"
+                                         f"/{summary['rows_read']}")
+        col3.metric("P_A_DTCH matched", f"{summary['rows_read'] - summary['pa_dtch']['misses']}"
+                                         f"/{summary['rows_read']}")
+
+        col4, col5, col6 = st.columns(3)
+        col4.metric("CellMeasGroup matched", f"{summary['rows_read'] - summary['cell_meas_group']['misses']}"
+                                              f"/{summary['rows_read']}")
+        if summary["traffic"]:
+            col5.metric(f"Traffic matched ({summary['traffic']['label']})",
+                        f"{summary['rows_read'] - summary['traffic']['misses']}/{summary['rows_read']}")
+        else:
+            col5.metric("Traffic matched", "not provided")
+        if summary["power_license"]:
+            col6.metric("Power license matched",
+                        f"{summary['rows_read'] - summary['power_license']['misses']}/{summary['rows_read']}")
+        else:
+            col6.metric("Power license matched", "not provided")
+
+        if summary["warnings"]:
+            with st.expander(f"Warnings ({len(summary['warnings'])})", expanded=False):
+                for w in summary["warnings"]:
+                    st.warning(w)
+
+        with st.expander("Full processing log"):
+            st.text(log_buffer.getvalue())
+
+with tab_history:
+    st.caption(
+        "One report per day -- regenerating later the same day replaces that day's file. "
+        "Stored in Cloudflare R2, so this survives app restarts/redeploys."
     )
 
-    st.subheader("Summary")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rows written", summary["rows_read"])
-    col2.metric("RS power matched", f"{summary['rs_power']['entries'] - summary['rs_power']['misses']}"
-                                     f"/{summary['rows_read']}")
-    col3.metric("P_A_DTCH matched", f"{summary['rows_read'] - summary['pa_dtch']['misses']}"
-                                     f"/{summary['rows_read']}")
-
-    col4, col5, col6 = st.columns(3)
-    col4.metric("CellMeasGroup matched", f"{summary['rows_read'] - summary['cell_meas_group']['misses']}"
-                                          f"/{summary['rows_read']}")
-    if summary["traffic"]:
-        col5.metric(f"Traffic matched ({summary['traffic']['label']})",
-                    f"{summary['rows_read'] - summary['traffic']['misses']}/{summary['rows_read']}")
+    items = list_daily_reports()
+    if items is None:
+        st.info(
+            "Persistent storage isn't configured yet. Add the `[r2]` secrets block "
+            "in this app's Settings -> Secrets to enable this tab."
+        )
+    elif not items:
+        st.caption("No reports saved yet.")
     else:
-        col5.metric("Traffic matched", "not provided")
-    if summary["power_license"]:
-        col6.metric("Power license matched",
-                    f"{summary['rows_read'] - summary['power_license']['misses']}/{summary['rows_read']}")
-    else:
-        col6.metric("Power license matched", "not provided")
-
-    if summary["warnings"]:
-        with st.expander(f"Warnings ({len(summary['warnings'])})", expanded=False):
-            for w in summary["warnings"]:
-                st.warning(w)
-
-    with st.expander("Full processing log"):
-        st.text(log_buffer.getvalue())
-
-st.divider()
-st.subheader("Previously generated reports")
-st.caption(
-    "Reports generated by anyone (including you, earlier) stay here for easy re-download. "
-    "This list resets if the app has been asleep a long time or was just redeployed."
-)
-
-reports = list_generated_reports()
-if not reports:
-    st.caption("No reports generated yet.")
-else:
-    for fname, fpath, size_bytes, mtime in reports:
-        col_name, col_time, col_dl = st.columns([3, 2, 1.3])
-        col_name.write(fname)
-        col_time.write(datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"))
-        with open(fpath, "rb") as f:
-            col_dl.download_button(
-                "Download",
-                data=f.read(),
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_{fname}",
-            )
+        for item in items:
+            col_day, col_name, col_dl = st.columns([1.3, 3, 1.3])
+            col_day.write(item["day"])
+            col_name.write(item["original_name"])
+            col_dl.link_button("Download", presigned_download_url(item["key"]))
