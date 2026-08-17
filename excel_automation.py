@@ -773,7 +773,11 @@ def run_pipeline(zip_path, template_path, other_exports_dir, output_dir,
         }
 
     # 7. Prepare output workbook from template ------------------------------------
-    output_name = f"{os.path.splitext(source_filename)[0]}_filled.xlsx"
+    # Timestamped so re-running against the same source (or a persistent,
+    # shared output_dir like the web app uses) never silently overwrites a
+    # previous result.
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_name = f"{os.path.splitext(source_filename)[0]}_filled_{run_timestamp}.xlsx"
     output_path = os.path.join(output_dir, output_name)
     shutil.copy(template_path, output_path)
 
