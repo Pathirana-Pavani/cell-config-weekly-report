@@ -225,33 +225,6 @@ def load_report_dataframe(sha):     # cache_data's own spinner renders as a smal
     return raw, df
 
 
-def render_searchable_table(df, key_prefix):
-    """
-    Shared by the "Previous Reports" tab (data fetched from GitHub) and the
-    "View Offline File" tab (data read from a locally-uploaded file) --
-    same search box + filtered table for both. key_prefix keeps widget
-    keys unique between the two (Streamlit renders every tab's content on
-    each rerun, just hides the inactive ones, so keys must not collide).
-    """
-    with st.form(f"{key_prefix}_search_form"):
-        col_search, col_btn = st.columns([4, 1.3])
-        search = col_search.text_input(
-            "Search",
-            placeholder="Type to filter rows across every column (NE ID, User Label, PCI, ...)",
-            label_visibility="collapsed",
-            key=f"{key_prefix}_search_input",
-        )
-        col_btn.form_submit_button("Search", type="primary", use_container_width=True)
-
-    display_df = df
-    if search:
-        mask = df.apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
-        display_df = df[mask]
-
-    st.caption(f"Showing {len(display_df):,} of {len(df):,} rows")
-    st.dataframe(display_df, use_container_width=True, height=500, hide_index=True)
-
-
 # ---------------------------------------------------------------------------
 # Live progress -- run_pipeline()'s row-reading step is the slow part
 # (often 1-8+ minutes for large exports) and otherwise prints nothing
@@ -287,7 +260,7 @@ class LiveLogStream:
 
 st.title("Weekly Cell Config Report")
 
-tab_generate, tab_history, tab_offline = st.tabs(["Generate Report", "Previous Reports", "View Offline File"])
+tab_generate, tab_history = st.tabs(["Generate Report", "Previous Reports"])
 
 with tab_generate:
     st.caption(
@@ -452,6 +425,19 @@ with tab_history:
         with st.spinner(f"Loading {selected_day} report..."):
             raw_bytes, df = load_report_dataframe(selected_item["sha"])
 
+        # Search is inside a form so typing/deleting doesn't rerun (and
+        # re-filter) on every keystroke -- only on Enter/Search click. This
+        # matters a lot for remote sites on weak connections, where every
+        # keystroke otherwise means a full round trip to the app.
+        with st.form("search_form"):
+            col_search, col_btn = st.columns([4, 1.3])
+            search = col_search.text_input(
+                "Search",
+                placeholder="Type to filter rows across every column (NE ID, User Label, PCI, ...)",
+                label_visibility="collapsed",
+            )
+            col_btn.form_submit_button("Search", type="primary", use_container_width=True)
+
         st.download_button(
             "Download .xlsx",
             data=raw_bytes,
@@ -460,25 +446,10 @@ with tab_history:
             key=f"dl_{selected_item['day']}",
         )
 
-        render_searchable_table(df, "history")
+        display_df = df
+        if search:
+            mask = df.apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
+            display_df = df[mask]
 
-with tab_offline:
-    st.caption(
-        "No website can automatically look inside your device's Downloads folder -- "
-        "browsers block that for privacy. But if your connection here is too weak to "
-        "load a report fresh, and you already downloaded one earlier when you had a "
-        "better connection, pick it below to search and browse it with no network "
-        "needed for this step."
-    )
-
-    uploaded_file = st.file_uploader(
-        "Upload a previously downloaded report (.xlsx)",
-        type=["xlsx"],
-        key="offline_upload",
-    )
-
-    if uploaded_file is not None:
-        with st.spinner("Reading file..."):
-            df_offline = pd.read_excel(uploaded_file, sheet_name=0, dtype=str)
-            df_offline = recompute_formula_columns(df_offline)
-        render_searchable_table(df_offline, "offline")
+        st.caption(f"Showing {len(display_df):,} of {len(df):,} rows")
+        st.dataframe(display_df, use_container_width=True, height=500, hide_index=True)
