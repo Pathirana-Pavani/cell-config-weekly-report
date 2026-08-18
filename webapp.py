@@ -127,8 +127,15 @@ def upload_daily_report(output_bytes, source_filename):
     return None, f"Could not save to persistent storage: {r.status_code} {r.text[:200]}"
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_daily_reports():
-    """Newest-first list of dicts (day, sha, size, name). None if not configured, [] if empty."""
+    """
+    Newest-first list of dicts (day, sha, size, name). None if not configured, [] if empty.
+    Cached for 60s -- without this, typing in the search box below (which
+    reruns the whole script on every keystroke) would re-fetch this list
+    from GitHub's API on every single character, which is slow and
+    especially painful for remote sites on weak connections.
+    """
     if not github_token():
         return None
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_REPORTS_DIR}"
@@ -415,13 +422,20 @@ with tab_history:
 
         raw_bytes, df = load_report_dataframe(selected_item["sha"])
 
-        col_search, col_dl = st.columns([4, 1.3])
-        search = col_search.text_input(
-            "Search",
-            placeholder="Type to filter rows across every column (NE ID, User Label, PCI, ...)",
-            label_visibility="collapsed",
-        )
-        col_dl.download_button(
+        # Search is inside a form so typing/deleting doesn't rerun (and
+        # re-filter) on every keystroke -- only on Enter/Search click. This
+        # matters a lot for remote sites on weak connections, where every
+        # keystroke otherwise means a full round trip to the app.
+        with st.form("search_form"):
+            col_search, col_btn = st.columns([4, 1.3])
+            search = col_search.text_input(
+                "Search",
+                placeholder="Type to filter rows across every column (NE ID, User Label, PCI, ...)",
+                label_visibility="collapsed",
+            )
+            col_btn.form_submit_button("Search", type="primary", use_container_width=True)
+
+        st.download_button(
             "Download .xlsx",
             data=raw_bytes,
             file_name=selected_item["name"],
@@ -431,7 +445,7 @@ with tab_history:
 
         display_df = df
         if search:
-            mask = df.apply(lambda col: col.astype(str).str.contains(search, case=False, na=False)).any(axis=1)
+            mask = df.apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
             display_df = df[mask]
 
         st.caption(f"Showing {len(display_df):,} of {len(df):,} rows")
