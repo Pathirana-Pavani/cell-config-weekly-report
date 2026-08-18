@@ -408,7 +408,8 @@ with tab_history:
         "Browse it right here, or download it below."
     )
 
-    items = list_daily_reports()
+    with st.spinner("Loading list of available reports..."):
+        items = list_daily_reports()
     if items is None:
         st.info(
             "Persistent storage isn't configured yet. Add the `[github]` secrets block "
@@ -421,7 +422,7 @@ with tab_history:
         selected_day = st.selectbox("Report date", day_options, index=0)
         selected_item = next(item for item in items if item["day"] == selected_day)
 
-        with st.spinner(f"Loading {selected_day} report... (only happens once per report; instant after)"):
+        with st.spinner(f"Loading {selected_day} report..."):
             raw_bytes, df = load_report_dataframe(selected_item["sha"])
 
         # Search is inside a form so typing/deleting doesn't rerun (and
