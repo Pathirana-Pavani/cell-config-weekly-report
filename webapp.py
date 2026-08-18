@@ -214,8 +214,9 @@ def recompute_formula_columns(df):
     return df
 
 
-@st.cache_data(show_spinner="Loading report...")
-def load_report_dataframe(sha):
+@st.cache_data(show_spinner=False)  # spinner is shown inline where it's called instead (see below) --
+def load_report_dataframe(sha):     # cache_data's own spinner renders as a small top-right overlay,
+                                     # easy to miss right where the table is about to appear.
     """Returns (raw_bytes, dataframe) for a report blob, cached by sha
     (immutable, so this never needs to re-fetch/re-parse the same report)."""
     raw = fetch_report_bytes(sha)
@@ -420,7 +421,8 @@ with tab_history:
         selected_day = st.selectbox("Report date", day_options, index=0)
         selected_item = next(item for item in items if item["day"] == selected_day)
 
-        raw_bytes, df = load_report_dataframe(selected_item["sha"])
+        with st.spinner(f"Loading {selected_day} report... (only happens once per report; instant after)"):
+            raw_bytes, df = load_report_dataframe(selected_item["sha"])
 
         # Search is inside a form so typing/deleting doesn't rerun (and
         # re-filter) on every keystroke -- only on Enter/Search click. This
