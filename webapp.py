@@ -59,6 +59,7 @@ import tempfile
 import time
 from datetime import datetime
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -153,6 +154,67 @@ def fetch_report_bytes(sha):
     r = requests.get(url, headers=github_headers())
     r.raise_for_status()
     return base64.b64decode(r.json()["content"])
+
+
+# ---------------------------------------------------------------------------
+# In-app table view -- the saved .xlsx only stores FORMULA TEXT for the
+# NEID_CellID/Site Name/Absolute sector/Absolute Sector/Name TAG columns
+# (Excel computes the actual values on open; nothing has ever opened these
+# generated files in real Excel to cache a result). Reading them straight
+# into pandas would show blanks or raw "=B2&C2" text, so recompute those
+# columns here in Python using the exact same logic as the formulas in
+# excel_automation.py's FORMULA_COLUMNS.
+# ---------------------------------------------------------------------------
+
+def _excel_find(needle, haystack, start=1):
+    idx = haystack.find(needle, start - 1)
+    return None if idx == -1 else idx + 1
+
+
+def _compute_site_name(user_label):
+    if not isinstance(user_label, str):
+        return user_label
+    pos = _excel_find("_L", user_label)
+    return user_label[:pos - 1] if pos else user_label
+
+
+def _compute_absolute_sector(user_label):
+    if not isinstance(user_label, str):
+        return user_label
+    p1 = _excel_find("L", user_label)
+    p2 = _excel_find("_L", user_label)
+    if not p1 or not p2:
+        return user_label
+    start = p2 + 2
+    end = _excel_find("-", user_label, start)
+    if not end:
+        return user_label
+    return user_label[:p1 - 1] + user_label[start - 1:end - 1]
+
+
+def recompute_formula_columns(df):
+    if "NE ID" in df.columns and "E-UTRAN FDD Cell ID" in df.columns and "NEID_CellID" in df.columns:
+        df["NEID_CellID"] = df["NE ID"].astype(str) + df["E-UTRAN FDD Cell ID"].astype(str)
+    if "User Label" in df.columns:
+        if "Site Name" in df.columns:
+            df["Site Name"] = df["User Label"].map(_compute_site_name)
+        if "Absolute sector" in df.columns:
+            df["Absolute sector"] = df["User Label"].map(_compute_absolute_sector)
+        if "Name TAG" in df.columns:
+            df["Name TAG"] = df["User Label"].astype(str).str[-3:]
+    if "Absolute sector" in df.columns and "Absolute Sector" in df.columns:
+        df["Absolute Sector"] = df["Absolute sector"].astype(str).str[-1:]
+    return df
+
+
+@st.cache_data(show_spinner="Loading report...")
+def load_report_dataframe(sha):
+    """Returns (raw_bytes, dataframe) for a report blob, cached by sha
+    (immutable, so this never needs to re-fetch/re-parse the same report)."""
+    raw = fetch_report_bytes(sha)
+    df = pd.read_excel(io.BytesIO(raw), sheet_name=0, dtype=str)
+    df = recompute_formula_columns(df)
+    return raw, df
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +397,7 @@ with tab_generate:
 with tab_history:
     st.caption(
         "One report per day -- regenerating later the same day replaces that day's file. "
+        "Browse it right here, or download it below."
     )
 
     items = list_daily_reports()
@@ -346,14 +409,30 @@ with tab_history:
     elif not items:
         st.caption("No reports saved yet.")
     else:
-        for item in items:
-            col_day, col_name, col_dl = st.columns([1.3, 3, 1.3])
-            col_day.write(item["day"])
-            col_name.write(item["name"])
-            col_dl.download_button(
-                "Download",
-                data=fetch_report_bytes(item["sha"]),
-                file_name=item["name"],
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_{item['day']}",
-            )
+        day_options = [item["day"] for item in items]  # already newest-first
+        selected_day = st.selectbox("Report date", day_options, index=0)
+        selected_item = next(item for item in items if item["day"] == selected_day)
+
+        raw_bytes, df = load_report_dataframe(selected_item["sha"])
+
+        col_search, col_dl = st.columns([4, 1.3])
+        search = col_search.text_input(
+            "Search",
+            placeholder="Type to filter rows across every column (NE ID, User Label, PCI, ...)",
+            label_visibility="collapsed",
+        )
+        col_dl.download_button(
+            "Download .xlsx",
+            data=raw_bytes,
+            file_name=selected_item["name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_{selected_item['day']}",
+        )
+
+        display_df = df
+        if search:
+            mask = df.apply(lambda col: col.astype(str).str.contains(search, case=False, na=False)).any(axis=1)
+            display_df = df[mask]
+
+        st.caption(f"Showing {len(display_df):,} of {len(df):,} rows")
+        st.dataframe(display_df, use_container_width=True, height=500, hide_index=True)
