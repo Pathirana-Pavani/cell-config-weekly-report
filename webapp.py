@@ -14,10 +14,11 @@ Flow for a team member:
     4. Click "Generate report", download it immediately.
 
 Every generated report also gets committed to this same GitHub repo, under
-reports/<date>.xlsx -- ONE file per day, overwritten (same commit path) if
-the report is regenerated the same day. The "Previous Reports" tab lists
-everything under reports/ with a download button. This survives app
-restarts/redeploys (it's stored in git, not the app's own disk).
+reports/<site_type>/<date>.xlsx -- ONE file per day per site type,
+overwritten (same commit path) if the report is regenerated the same
+day. The "Previous Reports" tab lets you pick a site type then a date.
+This survives app restarts/redeploys (it's stored in git, not the app's
+own disk).
 
 NOTE: this means each day's generated report -- containing real network
 data (NE IDs, site names, traffic, power values) -- becomes part of this
@@ -89,19 +90,19 @@ def github_headers():
     }
 
 
-def upload_daily_report(output_bytes, source_filename):
+def upload_daily_report(output_bytes, source_filename, site_type):
     """
-    Commit today's report to reports/<date>.xlsx in this repo. If that
-    path already has a commit from earlier today, this overwrites it
-    (same path, new commit) -- one file per day, regardless of what the
-    source zip was named.
+    Commit today's report to reports/<site_type>/<date>.xlsx in this repo.
+    If that path already has a commit from earlier today, this overwrites
+    it (same path, new commit) -- one file per day per site type,
+    regardless of what the source zip was named.
     """
     token = github_token()
     if not token:
         return None, "GitHub storage isn't configured -- report was not saved to persistent storage."
 
     today = datetime.now().strftime("%Y-%m-%d")
-    path = f"{GITHUB_REPORTS_DIR}/{today}.xlsx"
+    path = f"{GITHUB_REPORTS_DIR}/{site_type}/{today}.xlsx"
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
 
     # Look up the current file's sha (required by the API to overwrite an
@@ -114,7 +115,7 @@ def upload_daily_report(output_bytes, source_filename):
         return None, f"Could not check existing report: {r.status_code} {r.text[:200]}"
 
     body = {
-        "message": f"Daily report {today} ({source_filename})",
+        "message": f"Daily report {today} ({site_type}, {source_filename})",
         "content": base64.b64encode(output_bytes).decode("ascii"),
         "branch": GITHUB_BRANCH,
     }
@@ -128,17 +129,18 @@ def upload_daily_report(output_bytes, source_filename):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def list_daily_reports():
+def list_daily_reports(site_type):
     """
-    Newest-first list of dicts (day, sha, size, name). None if not configured, [] if empty.
-    Cached for 60s -- without this, typing in the search box below (which
-    reruns the whole script on every keystroke) would re-fetch this list
-    from GitHub's API on every single character, which is slow and
-    especially painful for remote sites on weak connections.
+    Newest-first list of dicts (day, sha, size, name) for one site type.
+    None if not configured, [] if empty. Cached for 60s -- without this,
+    typing in the search box below (which reruns the whole script on
+    every keystroke) would re-fetch this list from GitHub's API on every
+    single character, which is slow and especially painful for remote
+    sites on weak connections.
     """
     if not github_token():
         return None
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_REPORTS_DIR}"
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GITHUB_REPORTS_DIR}/{site_type}"
     r = requests.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
     if r.status_code == 404:
         return []
@@ -381,7 +383,7 @@ with tab_generate:
                 type="primary",
             )
     
-            saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"])
+            saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"], "zte")
             if save_error:
                 st.warning(save_error)
             else:
@@ -418,11 +420,9 @@ with tab_generate:
                 st.text(log_buffer.getvalue())
 
     with tab_huawei:
-        st.caption("Huawei site report generation -- not yet implemented.")
+        st.caption("Huawei site report generation")
         st.info(
-            "This will use different processing logic than ZTE sites "
-            "(different export format/sheets/columns). Waiting on the "
-            "specifics before this is built out."
+            "Coming soon"
         )
 
 with tab_history:
@@ -431,15 +431,18 @@ with tab_history:
         "Browse it right here, or download it below."
     )
 
+    site_type_label = st.selectbox("Site type", ["ZTE Sites", "Huawei Sites"])
+    site_type = "zte" if site_type_label == "ZTE Sites" else "huawei"
+
     with st.spinner("Loading list of available reports..."):
-        items = list_daily_reports()
+        items = list_daily_reports(site_type)
     if items is None:
         st.info(
             "Persistent storage isn't configured yet. Add the `[github]` secrets block "
             "in this app's Settings -> Secrets to enable this tab."
         )
     elif not items:
-        st.caption("No reports saved yet.")
+        st.caption(f"No {site_type_label} reports saved yet.")
     else:
         day_options = [item["day"] for item in items]  # already newest-first
         selected_day = st.selectbox("Report date", day_options, index=0)
