@@ -199,6 +199,18 @@ def _compute_absolute_sector(user_label):
     return user_label[:p1 - 1] + user_label[start - 1:end - 1]
 
 
+def _remap_absolute_sector(last_char):
+    """1/2/3 stay as-is, 4-8 shift down to 1-5, anything else -> blank."""
+    if not isinstance(last_char, str) or not last_char.isdigit():
+        return ""
+    d = int(last_char)
+    if 1 <= d <= 3:
+        return str(d)
+    if 4 <= d <= 8:
+        return str(d - 3)
+    return ""
+
+
 def recompute_formula_columns(df):
     if "NE ID" in df.columns and "E-UTRAN FDD Cell ID" in df.columns and "NEID_CellID" in df.columns:
         df["NEID_CellID"] = df["NE ID"].astype(str) + df["E-UTRAN FDD Cell ID"].astype(str)
@@ -210,7 +222,7 @@ def recompute_formula_columns(df):
         if "Name TAG" in df.columns:
             df["Name TAG"] = df["User Label"].astype(str).str[-3:]
     if "Absolute sector" in df.columns and "Absolute Sector" in df.columns:
-        df["Absolute Sector"] = df["Absolute sector"].astype(str).str[-1:]
+        df["Absolute Sector"] = df["Absolute sector"].astype(str).str[-1:].map(_remap_absolute_sector)
     return df
 
 

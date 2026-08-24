@@ -124,9 +124,19 @@ FORMULA_COLUMNS = [
         ),
     },
     {
+        # Take the last digit of Absolute sector, then remap it:
+        # 1/2/3 stay as-is, 4/5/6/7/8 shift down to 1/2/3/4/5, anything
+        # else (0, 9, or non-numeric, e.g. a fallback full label) -> blank.
         "header": "Absolute Sector",
         "refs": ["Absolute sector"],
-        "formula": lambda r, c: f"=RIGHT({c['Absolute sector']}{r},1)",
+        "formula": lambda r, c: (
+            f'=IFERROR(IF(AND(VALUE(RIGHT({c["Absolute sector"]}{r},1))>=1,'
+            f'VALUE(RIGHT({c["Absolute sector"]}{r},1))<=3),'
+            f'VALUE(RIGHT({c["Absolute sector"]}{r},1)),'
+            f'IF(AND(VALUE(RIGHT({c["Absolute sector"]}{r},1))>=4,'
+            f'VALUE(RIGHT({c["Absolute sector"]}{r},1))<=8),'
+            f'VALUE(RIGHT({c["Absolute sector"]}{r},1))-3,"")),"")'
+        ),
     },
     {
         "header": "Name TAG",
