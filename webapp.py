@@ -275,144 +275,155 @@ st.title("Weekly Cell Config Report")
 tab_generate, tab_history = st.tabs(["Generate Report", "Previous Reports"])
 
 with tab_generate:
-    st.caption(
-        "Upload network export zip file and (optionally, the Cell DB export "
-        "and power license export) to generate the filled report."
-    )
+    tab_huawei, tab_zte = st.tabs(["Huawei Sites", "ZTE Sites"])
 
-    with st.form("report_form"):
-        zip_file = st.file_uploader(
-            "Main network export (.zip)",
-            type=["zip"],
-            help="The weekly zipped radio-config export containing the EUtranCellFDD workbook.",
+    with tab_huawei:
+        st.caption(
+            "Upload network export zip file and (optionally, the Cell DB export "
+            "and power license export) to generate the filled report."
         )
-        cell_db_file = st.file_uploader(
-            "Cell DB Export (optional)",
-            type=["xlsx", "xlsm"],
-            help="Fills the 'Traffic @ <date>' column. Skip this if you don't have it -- "
-                 "that column is just left as-is.",
-        )
-        power_license_file = st.file_uploader(
-            "Power license export (optional)",
-            type=["xlsx", "xlsm"],
-            help="Fills 'FDD Power (W)Authorization Value' and 'LTE FDD(W) Configuration "
-                 "Value'. Skip this if you don't have it -- those columns are left blank.",
-        )
-        submitted = st.form_submit_button("Generate report", type="primary")
-
-    if submitted:
-        if zip_file is None:
-            st.error("Please upload the main network export zip file.")
-            st.stop()
-
-        template_path = ea.find_template_file(ea.TEMPLATE_DIR)
-        if not template_path:
-            st.error(
-                "No template file found in this app's template/ folder. "
-                "This is a setup problem, not something you can fix here -- "
-                "contact whoever maintains this app."
+    
+        with st.form("report_form"):
+            zip_file = st.file_uploader(
+                "Main network export (.zip)",
+                type=["zip"],
+                help="The weekly zipped radio-config export containing the EUtranCellFDD workbook.",
             )
-            st.stop()
-
-        with tempfile.TemporaryDirectory(prefix="report_run_") as work_dir:
-            zip_path = os.path.join(work_dir, zip_file.name)
-            with open(zip_path, "wb") as f:
-                f.write(zip_file.getbuffer())
-
-            other_exports_dir = os.path.join(work_dir, "other_exports")
-            os.makedirs(other_exports_dir, exist_ok=True)
-
-            cell_db_path = None
-            if cell_db_file is not None:
-                cell_db_path = os.path.join(other_exports_dir, cell_db_file.name)
-                with open(cell_db_path, "wb") as f:
-                    f.write(cell_db_file.getbuffer())
-
-            power_license_path = None
-            if power_license_file is not None:
-                power_license_path = os.path.join(other_exports_dir, power_license_file.name)
-                with open(power_license_path, "wb") as f:
-                    f.write(power_license_file.getbuffer())
-
-            output_dir = os.path.join(work_dir, "output")
-
-            log_buffer = io.StringIO()
-            start_time = time.time()
-            try:
-                with st.status("Generating report...", expanded=True) as status_box:
-                    status_line = st.empty()
-                    live_stream = LiveLogStream(log_buffer, status_line, start_time)
-                    with contextlib.redirect_stdout(live_stream):
-                        output_path, summary = ea.run_pipeline(
-                            zip_path, template_path, other_exports_dir, output_dir,
-                            cell_db_export_path=cell_db_path,
-                            power_license_path=power_license_path,
+            cell_db_file = st.file_uploader(
+                "Cell DB Export (optional)",
+                type=["xlsx", "xlsm"],
+                help="Fills the 'Traffic @ <date>' column. Skip this if you don't have it -- "
+                     "that column is just left as-is.",
+            )
+            power_license_file = st.file_uploader(
+                "Power license export (optional)",
+                type=["xlsx", "xlsm"],
+                help="Fills 'FDD Power (W)Authorization Value' and 'LTE FDD(W) Configuration "
+                     "Value'. Skip this if you don't have it -- those columns are left blank.",
+            )
+            submitted = st.form_submit_button("Generate report", type="primary")
+    
+        if submitted:
+            if zip_file is None:
+                st.error("Please upload the main network export zip file.")
+                st.stop()
+    
+            template_path = ea.find_template_file(ea.TEMPLATE_DIR)
+            if not template_path:
+                st.error(
+                    "No template file found in this app's template/ folder. "
+                    "This is a setup problem, not something you can fix here -- "
+                    "contact whoever maintains this app."
+                )
+                st.stop()
+    
+            with tempfile.TemporaryDirectory(prefix="report_run_") as work_dir:
+                zip_path = os.path.join(work_dir, zip_file.name)
+                with open(zip_path, "wb") as f:
+                    f.write(zip_file.getbuffer())
+    
+                other_exports_dir = os.path.join(work_dir, "other_exports")
+                os.makedirs(other_exports_dir, exist_ok=True)
+    
+                cell_db_path = None
+                if cell_db_file is not None:
+                    cell_db_path = os.path.join(other_exports_dir, cell_db_file.name)
+                    with open(cell_db_path, "wb") as f:
+                        f.write(cell_db_file.getbuffer())
+    
+                power_license_path = None
+                if power_license_file is not None:
+                    power_license_path = os.path.join(other_exports_dir, power_license_file.name)
+                    with open(power_license_path, "wb") as f:
+                        f.write(power_license_file.getbuffer())
+    
+                output_dir = os.path.join(work_dir, "output")
+    
+                log_buffer = io.StringIO()
+                start_time = time.time()
+                try:
+                    with st.status("Generating report...", expanded=True) as status_box:
+                        status_line = st.empty()
+                        live_stream = LiveLogStream(log_buffer, status_line, start_time)
+                        with contextlib.redirect_stdout(live_stream):
+                            output_path, summary = ea.run_pipeline(
+                                zip_path, template_path, other_exports_dir, output_dir,
+                                cell_db_export_path=cell_db_path,
+                                power_license_path=power_license_path,
+                            )
+                        status_box.update(
+                            label=f"Report generated in {time.time() - start_time:.1f}s",
+                            state="complete",
                         )
-                    status_box.update(
-                        label=f"Report generated in {time.time() - start_time:.1f}s",
-                        state="complete",
-                    )
-            except ea.AutomationError as e:
-                status_box.update(label="Failed", state="error")
-                st.error(f"Could not generate the report: {e}")
-                with st.expander("Full processing log"):
-                    st.text(log_buffer.getvalue())
-                st.stop()
-            except Exception as e:  # unexpected -- still show the log to help debugging
-                status_box.update(label="Failed", state="error")
-                st.error(f"Unexpected error: {e}")
-                with st.expander("Full processing log"):
-                    st.text(log_buffer.getvalue())
-                st.stop()
+                except ea.AutomationError as e:
+                    status_box.update(label="Failed", state="error")
+                    st.error(f"Could not generate the report: {e}")
+                    with st.expander("Full processing log"):
+                        st.text(log_buffer.getvalue())
+                    st.stop()
+                except Exception as e:  # unexpected -- still show the log to help debugging
+                    status_box.update(label="Failed", state="error")
+                    st.error(f"Unexpected error: {e}")
+                    with st.expander("Full processing log"):
+                        st.text(log_buffer.getvalue())
+                    st.stop()
+    
+                with open(output_path, "rb") as f:
+                    output_bytes = f.read()
+    
+            st.success(f"Report generated: {summary['rows_read']} cell rows written.")
+    
+            st.download_button(
+                "Download filled report",
+                data=output_bytes,
+                file_name=summary["output_name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+            )
+    
+            saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"])
+            if save_error:
+                st.warning(save_error)
+            else:
+                st.caption(f"Also saved to persistent storage as today's report ({saved_key.rsplit('/', 1)[-1]}).")
+    
+            st.subheader("Summary")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Rows written", summary["rows_read"])
+            col2.metric("RS power matched", f"{summary['rs_power']['entries'] - summary['rs_power']['misses']}"
+                                             f"/{summary['rows_read']}")
+            col3.metric("P_A_DTCH matched", f"{summary['rows_read'] - summary['pa_dtch']['misses']}"
+                                             f"/{summary['rows_read']}")
+    
+            col4, col5, col6 = st.columns(3)
+            col4.metric("CellMeasGroup matched", f"{summary['rows_read'] - summary['cell_meas_group']['misses']}"
+                                                  f"/{summary['rows_read']}")
+            if summary["traffic"]:
+                col5.metric(f"Traffic matched ({summary['traffic']['label']})",
+                            f"{summary['rows_read'] - summary['traffic']['misses']}/{summary['rows_read']}")
+            else:
+                col5.metric("Traffic matched", "not provided")
+            if summary["power_license"]:
+                col6.metric("Power license matched",
+                            f"{summary['rows_read'] - summary['power_license']['misses']}/{summary['rows_read']}")
+            else:
+                col6.metric("Power license matched", "not provided")
+    
+            if summary["warnings"]:
+                with st.expander(f"Warnings ({len(summary['warnings'])})", expanded=False):
+                    for w in summary["warnings"]:
+                        st.warning(w)
+    
+            with st.expander("Full processing log"):
+                st.text(log_buffer.getvalue())
 
-            with open(output_path, "rb") as f:
-                output_bytes = f.read()
-
-        st.success(f"Report generated: {summary['rows_read']} cell rows written.")
-
-        st.download_button(
-            "Download filled report",
-            data=output_bytes,
-            file_name=summary["output_name"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
+    with tab_zte:
+        st.caption("ZTE site report generation -- not yet implemented.")
+        st.info(
+            "This will use different processing logic than Huawei sites "
+            "(different export format/sheets/columns). Waiting on the "
+            "specifics before this is built out."
         )
-
-        saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"])
-        if save_error:
-            st.warning(save_error)
-        else:
-            st.caption(f"Also saved to persistent storage as today's report ({saved_key.rsplit('/', 1)[-1]}).")
-
-        st.subheader("Summary")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Rows written", summary["rows_read"])
-        col2.metric("RS power matched", f"{summary['rs_power']['entries'] - summary['rs_power']['misses']}"
-                                         f"/{summary['rows_read']}")
-        col3.metric("P_A_DTCH matched", f"{summary['rows_read'] - summary['pa_dtch']['misses']}"
-                                         f"/{summary['rows_read']}")
-
-        col4, col5, col6 = st.columns(3)
-        col4.metric("CellMeasGroup matched", f"{summary['rows_read'] - summary['cell_meas_group']['misses']}"
-                                              f"/{summary['rows_read']}")
-        if summary["traffic"]:
-            col5.metric(f"Traffic matched ({summary['traffic']['label']})",
-                        f"{summary['rows_read'] - summary['traffic']['misses']}/{summary['rows_read']}")
-        else:
-            col5.metric("Traffic matched", "not provided")
-        if summary["power_license"]:
-            col6.metric("Power license matched",
-                        f"{summary['rows_read'] - summary['power_license']['misses']}/{summary['rows_read']}")
-        else:
-            col6.metric("Power license matched", "not provided")
-
-        if summary["warnings"]:
-            with st.expander(f"Warnings ({len(summary['warnings'])})", expanded=False):
-                for w in summary["warnings"]:
-                    st.warning(w)
-
-        with st.expander("Full processing log"):
-            st.text(log_buffer.getvalue())
 
 with tab_history:
     st.caption(
