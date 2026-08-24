@@ -275,9 +275,9 @@ st.title("Weekly Cell Config Report")
 tab_generate, tab_history = st.tabs(["Generate Report", "Previous Reports"])
 
 with tab_generate:
-    tab_huawei, tab_zte = st.tabs(["Huawei Sites", "ZTE Sites"])
+    tab_zte, tab_huawei = st.tabs(["ZTE Sites", "Huawei Sites"])
 
-    with tab_huawei:
+    with tab_zte:
         st.caption(
             "Upload network export zip file and (optionally, the Cell DB export "
             "and power license export) to generate the filled report."
@@ -417,10 +417,10 @@ with tab_generate:
             with st.expander("Full processing log"):
                 st.text(log_buffer.getvalue())
 
-    with tab_zte:
-        st.caption("ZTE site report generation -- not yet implemented.")
+    with tab_huawei:
+        st.caption("Huawei site report generation -- not yet implemented.")
         st.info(
-            "This will use different processing logic than Huawei sites "
+            "This will use different processing logic than ZTE sites "
             "(different export format/sheets/columns). Waiting on the "
             "specifics before this is built out."
         )
