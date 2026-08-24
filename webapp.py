@@ -65,6 +65,7 @@ import requests
 import streamlit as st
 
 import excel_automation as ea
+import huawei_automation as ha
 
 st.set_page_config(page_title="Weekly Cell Config Report", page_icon="\U0001F4F6", layout="centered")
 
@@ -420,10 +421,128 @@ with tab_generate:
                 st.text(log_buffer.getvalue())
 
     with tab_huawei:
-        st.caption("Huawei site report generation")
-        st.info(
-            "Coming soon"
+        st.caption(
+            "Upload the three Huawei export files separately (LST CELL, LSTPDSCH, "
+            "LST CELLDLPCPDSCHPA) to generate the filled report."
         )
+
+        with st.form("huawei_report_form"):
+            lst_cell_file = st.file_uploader(
+                "LST CELL export (.xlsx)",
+                type=["xlsx"],
+                help="The main export -- Base Station Name, Cell ID, Cell Name, and most "
+                     "other columns are copied straight from this file.",
+            )
+            lstpdsch_file = st.file_uploader(
+                "LSTPDSCH export (.xlsx)",
+                type=["xlsx"],
+                help="Fills 'Reference signal power(0.1dBm)' and 'PB'.",
+            )
+            celldlpcpdschpa_file = st.file_uploader(
+                "LST CELLDLPCPDSCHPA export (.xlsx)",
+                type=["xlsx"],
+                help="Fills 'PA for even power distribution(dB)'.",
+            )
+            huawei_submitted = st.form_submit_button("Generate report", type="primary")
+
+        if huawei_submitted:
+            missing_files = [
+                label for label, f in [
+                    ("LST CELL", lst_cell_file),
+                    ("LSTPDSCH", lstpdsch_file),
+                    ("LST CELLDLPCPDSCHPA", celldlpcpdschpa_file),
+                ] if f is None
+            ]
+            if missing_files:
+                st.error(f"Please upload all three export files. Missing: {', '.join(missing_files)}.")
+                st.stop()
+
+            huawei_template_path = os.path.join(ea.TEMPLATE_DIR, "huawei_configuration.xlsx")
+            if not os.path.isfile(huawei_template_path):
+                st.error(
+                    "No Huawei template found in this app's template/ folder. "
+                    "This is a setup problem, not something you can fix here -- "
+                    "contact whoever maintains this app."
+                )
+                st.stop()
+
+            with tempfile.TemporaryDirectory(prefix="huawei_report_run_") as work_dir:
+                lst_cell_path = os.path.join(work_dir, lst_cell_file.name)
+                with open(lst_cell_path, "wb") as f:
+                    f.write(lst_cell_file.getbuffer())
+                lstpdsch_path = os.path.join(work_dir, lstpdsch_file.name)
+                with open(lstpdsch_path, "wb") as f:
+                    f.write(lstpdsch_file.getbuffer())
+                celldlpcpdschpa_path = os.path.join(work_dir, celldlpcpdschpa_file.name)
+                with open(celldlpcpdschpa_path, "wb") as f:
+                    f.write(celldlpcpdschpa_file.getbuffer())
+
+                output_dir = os.path.join(work_dir, "output")
+
+                log_buffer = io.StringIO()
+                start_time = time.time()
+                try:
+                    with st.status("Generating report...", expanded=True) as status_box:
+                        status_line = st.empty()
+                        live_stream = LiveLogStream(log_buffer, status_line, start_time)
+                        with contextlib.redirect_stdout(live_stream):
+                            output_path, summary = ha.run_pipeline(
+                                lst_cell_path, lstpdsch_path, celldlpcpdschpa_path,
+                                huawei_template_path, output_dir,
+                            )
+                        status_box.update(
+                            label=f"Report generated in {time.time() - start_time:.1f}s",
+                            state="complete",
+                        )
+                except ha.AutomationError as e:
+                    status_box.update(label="Failed", state="error")
+                    st.error(f"Could not generate the report: {e}")
+                    with st.expander("Full processing log"):
+                        st.text(log_buffer.getvalue())
+                    st.stop()
+                except Exception as e:  # unexpected -- still show the log to help debugging
+                    status_box.update(label="Failed", state="error")
+                    st.error(f"Unexpected error: {e}")
+                    with st.expander("Full processing log"):
+                        st.text(log_buffer.getvalue())
+                    st.stop()
+
+                with open(output_path, "rb") as f:
+                    output_bytes = f.read()
+
+            st.success(f"Report generated: {summary['rows_read']} cell rows written.")
+
+            st.download_button(
+                "Download filled report",
+                data=output_bytes,
+                file_name=summary["output_name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key="huawei_download",
+            )
+
+            saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"], "huawei")
+            if save_error:
+                st.warning(save_error)
+            else:
+                st.caption(f"Also saved to persistent storage as today's report ({saved_key.rsplit('/', 1)[-1]}).")
+
+            st.subheader("Summary")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Rows written", summary["rows_read"])
+            col2.metric("LSTPDSCH matched", f"{summary['rows_read'] - summary['lstpdsch']['misses']}"
+                                             f"/{summary['rows_read']}")
+            col3.metric("LST CELLDLPCPDSCHPA matched",
+                        f"{summary['rows_read'] - summary['celldlpcpdschpa']['misses']}"
+                        f"/{summary['rows_read']}")
+
+            if summary["warnings"]:
+                with st.expander(f"Warnings ({len(summary['warnings'])})", expanded=False):
+                    for w in summary["warnings"]:
+                        st.warning(w)
+
+            with st.expander("Full processing log"):
+                st.text(log_buffer.getvalue())
 
 with tab_history:
     st.caption(

@@ -6,6 +6,7 @@ other_exports/*
 output/*
 !output/.gitkeep
 _extracted/
+Huawei/
 
 # Python / local env
 .venv/
