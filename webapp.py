@@ -214,6 +214,20 @@ def _remap_absolute_sector(last_char):
     return ""
 
 
+def _compute_huawei_absolute_sector(cell_name):
+    """Huawei's own convention: single digit right after '_L' in Cell Name,
+    then the same 1-3/4-8/else remap as ZTE (see _remap_absolute_sector)."""
+    if not isinstance(cell_name, str):
+        return ""
+    pos = _excel_find("_L", cell_name)
+    if pos is None:
+        return ""
+    idx0 = pos - 1 + 2  # 0-based index of the char right after "_L"
+    if idx0 >= len(cell_name):
+        return ""
+    return _remap_absolute_sector(cell_name[idx0])
+
+
 def recompute_formula_columns(df):
     if "NE ID" in df.columns and "E-UTRAN FDD Cell ID" in df.columns and "NEID_CellID" in df.columns:
         df["NEID_CellID"] = df["NE ID"].astype(str) + df["E-UTRAN FDD Cell ID"].astype(str)
@@ -226,6 +240,18 @@ def recompute_formula_columns(df):
             df["Name TAG"] = df["User Label"].astype(str).str[-3:]
     if "Absolute sector" in df.columns and "Absolute Sector" in df.columns:
         df["Absolute Sector"] = df["Absolute sector"].astype(str).str[-1:].map(_remap_absolute_sector)
+
+    # Huawei-style report: no "User Label"/"Absolute Sector" second column --
+    # its single "Absolute sector" column is itself the remapped value,
+    # derived from "Cell Name" instead of "User Label".
+    if "Cell Name" in df.columns and "User Label" not in df.columns and "Absolute sector" in df.columns:
+        df["Absolute sector"] = df["Cell Name"].map(_compute_huawei_absolute_sector)
+
+    # Huawei's blank-header join-key column (pandas names it "Unnamed: N").
+    if "Cell ID" in df.columns and "Base Station Name" in df.columns:
+        for col in [c for c in df.columns if str(c).startswith("Unnamed:")]:
+            df[col] = df["Cell ID"].astype(str) + df["Base Station Name"].astype(str)
+
     return df
 
 
