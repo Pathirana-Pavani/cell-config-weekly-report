@@ -498,7 +498,20 @@ def find_excel_file(folder):
     return None
 
 
-def find_template_file(folder):
+def find_template_file(folder, filename=None):
+    """
+    Find a template file in `folder`. If `filename` is given, look for that
+    EXACT file (case-insensitive) -- required now that template/ holds more
+    than one template (ZTE's and Huawei's); without a specific filename,
+    os.listdir()'s order is filesystem-dependent, so "just grab the first
+    .xlsx" is no longer safe. Falls back to "first file found" only when no
+    filename is specified, for backward compatibility.
+    """
+    if filename is not None:
+        for fname in os.listdir(folder):
+            if fname.lower() == filename.lower():
+                return os.path.join(folder, fname)
+        return None
     for fname in os.listdir(folder):
         if fname.lower().endswith((".xlsx", ".xlsm")) and not fname.startswith("~$"):
             return os.path.join(folder, fname)
@@ -916,9 +929,9 @@ def main():
         sys.exit(f"ERROR: No .zip file found in '{INPUT_ZIP_DIR}'.")
     log(f"Found zip: {zip_path}")
 
-    template_path = find_template_file(TEMPLATE_DIR)
+    template_path = find_template_file(TEMPLATE_DIR, filename="basic_configurations.xlsx")
     if not template_path:
-        sys.exit(f"ERROR: No template .xlsx file found in '{TEMPLATE_DIR}'.")
+        sys.exit(f"ERROR: 'basic_configurations.xlsx' not found in '{TEMPLATE_DIR}'.")
 
     try:
         run_pipeline(zip_path, template_path, OTHER_EXPORTS_DIR, OUTPUT_DIR)

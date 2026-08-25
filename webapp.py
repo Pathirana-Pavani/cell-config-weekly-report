@@ -337,10 +337,10 @@ with tab_generate:
                 st.error("Please upload the main network export zip file.")
                 st.stop()
     
-            template_path = ea.find_template_file(ea.TEMPLATE_DIR)
+            template_path = ea.find_template_file(ea.TEMPLATE_DIR, filename="basic_configurations.xlsx")
             if not template_path:
                 st.error(
-                    "No template file found in this app's template/ folder. "
+                    "No ZTE template found in this app's template/ folder. "
                     "This is a setup problem, not something you can fix here -- "
                     "contact whoever maintains this app."
                 )
