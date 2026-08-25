@@ -247,10 +247,10 @@ def recompute_formula_columns(df):
     if "Cell Name" in df.columns and "User Label" not in df.columns and "Absolute sector" in df.columns:
         df["Absolute sector"] = df["Cell Name"].map(_compute_huawei_absolute_sector)
 
-    # Huawei's blank-header join-key column (pandas names it "Unnamed: N").
-    if "Cell ID" in df.columns and "Base Station Name" in df.columns:
-        for col in [c for c in df.columns if str(c).startswith("Unnamed:")]:
-            df[col] = df["Cell ID"].astype(str) + df["Base Station Name"].astype(str)
+    # Huawei's join-key column: header text is real, but the cell itself is
+    # a formula with no cached value (never opened in real Excel).
+    if "Cell ID" in df.columns and "Base Station Name" in df.columns and "Cell ID + Base Station Name" in df.columns:
+        df["Cell ID + Base Station Name"] = df["Cell ID"].astype(str) + df["Base Station Name"].astype(str)
 
     return df
 
@@ -405,11 +405,11 @@ with tab_generate:
             st.download_button(
                 "Download filled report",
                 data=output_bytes,
-                file_name=summary["output_name"],
+                file_name=f"zte_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
             )
-    
+
             saved_key, save_error = upload_daily_report(output_bytes, summary["source_filename"], "zte")
             if save_error:
                 st.warning(save_error)
@@ -541,7 +541,7 @@ with tab_generate:
             st.download_button(
                 "Download filled report",
                 data=output_bytes,
-                file_name=summary["output_name"],
+                file_name=f"huawei_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 key="huawei_download",
@@ -612,7 +612,7 @@ with tab_history:
         st.download_button(
             "Download .xlsx",
             data=raw_bytes,
-            file_name=selected_item["name"],
+            file_name=f"{site_type}_{selected_item['day']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"dl_{selected_item['day']}",
         )

@@ -86,6 +86,7 @@ CELLDLPCPDSCHPA_VALUE_COLUMNS = ["PA for even power distribution(dB)"]
 
 TEMPLATE_DIRECT_COLUMNS = list(LST_CELL_DIRECT_COLUMNS.keys())
 TEMPLATE_LOOKUP_COLUMNS = LSTPDSCH_VALUE_COLUMNS + CELLDLPCPDSCHPA_VALUE_COLUMNS
+TEMPLATE_JOIN_KEY_COLUMN = "Cell ID + Base Station Name"
 
 
 def _find(needle, haystack, start=1):
@@ -240,7 +241,9 @@ def run_pipeline(lst_cell_path, lstpdsch_path, celldlpcpdschpa_path, template_pa
 
     tpl_header_grids = fetch_header_rows(out_ws, TEMPLATE_HEADER_ROWS, max_col=out_ws.max_column)
     tpl_merged = get_merged_ranges(out_ws)
-    needed_template_cols = TEMPLATE_DIRECT_COLUMNS + TEMPLATE_LOOKUP_COLUMNS + ["Absolute sector"]
+    needed_template_cols = TEMPLATE_DIRECT_COLUMNS + TEMPLATE_LOOKUP_COLUMNS + [
+        "Absolute sector", TEMPLATE_JOIN_KEY_COLUMN,
+    ]
     tpl_col_map = find_header_columns_fast(
         tpl_header_grids, tpl_merged, TEMPLATE_HEADER_ROWS, needed_template_cols, out_ws.max_column
     )
@@ -249,16 +252,9 @@ def run_pipeline(lst_cell_path, lstpdsch_path, celldlpcpdschpa_path, template_pa
         note("These columns were not found in the template headers and will be skipped: "
              + ", ".join(missing_in_template))
 
-    # The join-key ("purple") column has no header text -- it's identified
-    # by position: immediately between Base Station Name and Cell ID.
-    join_key_col = None
+    join_key_col = tpl_col_map.get(TEMPLATE_JOIN_KEY_COLUMN)
     bsn_col = tpl_col_map.get("Base Station Name")
     cell_id_col = tpl_col_map.get("Cell ID")
-    if bsn_col and cell_id_col and cell_id_col - bsn_col == 2:
-        join_key_col = bsn_col + 1
-    else:
-        note("Could not locate the join-key column by position (expected directly "
-             "between Base Station Name and Cell ID) -- it will be left blank.")
 
     abs_sector_col = tpl_col_map.get("Absolute sector")
     cell_name_col = tpl_col_map.get("Cell Name")
